@@ -13,11 +13,11 @@ LocalPath::LocalPath(ros::NodeHandle &nh) : nh_(nh), tf_buffer_(), tf_listener_(
     obsinfo_.inside_path  = false;
     obsinfo_.outside_path = true;
 
-    global_path_ = &outside_global_path_;
-    prev_global_path_ = &outside_global_path_;
+    global_path_ = &inside_global_path_;
+    prev_global_path_ = &inside_global_path_;
     sub_q_ = 0.35;
     last_pose_sub_q_ = 0.35;
-    sub_q_condition_ = 0.3;
+    sub_q_condition_ = 0.05;
     last_pose_sub_q_condition_ = 0.3;
     car_low_sub_q_ = false;
     last_pose_low_sub_q_ = false;
@@ -26,17 +26,25 @@ LocalPath::LocalPath(ros::NodeHandle &nh) : nh_(nh), tf_buffer_(), tf_listener_(
     final_delta_s_ = 1.5;
     must_lane_chage_ = false; // 전방 장애물에 의한 차선 변경 변수
     s_min_ = 1.0;             // 상황에 따라 수정
-    s_max_ = 3.0;            // 상황에 따라 수정
+    s_max_ = 2.0;            // 상황에 따라 수정
     delta_s_obs_sub_num_ = 0.3; // 상황에 따라 수정
+    obstacle_avoidance_ = false;
+    left_lane_ = false;
+    right_lane_ = true;
+    go_straight_ = false;
 
     // Publishers
     optimal_path_pub_ = nh_.advertise<nav_msgs::Path>("/local_path", 1);
     target_v_pub_ = nh_.advertise<std_msgs::Float32>("/target_v", 1);
+    obstacle_avoidance_pub_ = nh_.advertise<std_msgs::Bool>("/obstacle_avoidance", 1);
+    left_lane_pub_ = nh_.advertise<std_msgs::Bool>("/left_lane", 1);
+    right_lane_pub_ = nh_.advertise<std_msgs::Bool>("/right_lane", 1);
+    go_straight_pub_ = nh_.advertise<std_msgs::Bool>("/go_straight", 1);
 
     // Subscribers
     inside_global_path_sub_ = nh_.subscribe("/kmu_in_path", 1, &LocalPath::insideGlobalPathCallback, this);
     outside_global_path_sub_ = nh_.subscribe("/kmu_out_path", 1, &LocalPath::outsideGlobalPathCallback, this);
-    obs_sub_ = nh_.subscribe("/Object_topic", 1, &LocalPath::obsCallback, this);
+    obs_sub_ = nh_.subscribe("/detected_obstacle_points_base_link", 1, &LocalPath::obsCallback, this);
     status_sub_ = nh_.subscribe("/sensors/core", 1, &LocalPath::VescStateCallback, this);
 }
 
@@ -62,6 +70,11 @@ void LocalPath::spin()
                 Obsinfo &obs1 = obsinfo_;
                 vector<Obs> &intergrated_obs = intergrated_obs_;
 
+                if (56.4<webot.s && webot.s <60.5)
+                    go_straight_ = true;
+                else
+                    go_straight_ = false;
+
                 cout << "-------------------- Local Path Info --------------------" << endl;
                 cout << "Global Path: " << (global_path->outside_path ? "Outside" : "Inside") << endl;
                 cout << "x: " << webot.x << ", y: " << webot.y << endl;
@@ -84,6 +97,15 @@ void LocalPath::spin()
 
                 vmsg_.data = target_v_;
                 target_v_pub_.publish(vmsg_);
+
+                obstacle_avoidance_msg_.data = obstacle_avoidance_;
+                obstacle_avoidance_pub_.publish(obstacle_avoidance_msg_);
+                left_lane_msg_.data = left_lane_;
+                left_lane_pub_.publish(left_lane_msg_);
+                right_lane_msg_.data = right_lane_;
+                right_lane_pub_.publish(right_lane_msg_);
+                go_straight_msg_.data = go_straight_;
+                go_straight_pub_.publish(go_straight_msg_);
 
                 last_pose_ = optimal_path_.poses.back();
                 compute_last_pose_sup_q(last_pose_, inside_global_path_, outside_global_path_);
@@ -228,7 +250,7 @@ void LocalPath::updatePoseFromTF()
     }
 }
 
-void LocalPath::obsCallback(const morai_msgs::ObjectStatusList::ConstPtr &msg)
+void LocalPath::obsCallback(const sensor_msgs::PointCloud::ConstPtr &msg)
 {
     if (!inside_global_path_.global_path_ready || !outside_global_path_.global_path_ready || inside_global_path_.s_candidates.empty() || outside_global_path_.s_candidates.empty() || !is_pose_ready_)
         return;
@@ -242,12 +264,12 @@ void LocalPath::obsCallback(const morai_msgs::ObjectStatusList::ConstPtr &msg)
     obsinfo_.inside_path = global_path->inside_path;
     obsinfo_.outside_path = global_path->outside_path;
 
-    for (const auto &obs : msg->obstacle_list)
+    for (const auto &obs : msg->points)
     {
         double global_obs_x, global_obs_y;
-        global_obs_x = obs.position.x;
-        global_obs_y = obs.position.y;
-        // local_to_global(obs.x + 0.84, obs.y, global_obs_x, global_obs_y, erp);
+        // global_obs_x = obs.position.x;
+        // global_obs_y = obs.position.y;
+        local_to_global(obs.x, obs.y, global_obs_x, global_obs_y, webot);
 
         double s_obs, q_obs;
         compute_obstacle_frenet_all(global_obs_x, global_obs_y, s_obs, q_obs, global_path);
@@ -265,7 +287,7 @@ void LocalPath::obsCallback(const morai_msgs::ObjectStatusList::ConstPtr &msg)
         {
             if (global_path->outside_path) // out
             {
-                if (0.3 + last_pose_sub_q_ >= q_obs && q_obs >= -0.3) // 도로 규격 내에 존재해야함
+                if (0.7 + last_pose_sub_q_ >= q_obs && q_obs >= -0.7) // 도로 규격 내에 존재해야함
                     if (q_obs <= last_pose_sub_q_ / 2)
                         obsinfo_.obs.push_back({s_obs, q_obs, global_obs_x, global_obs_y, true, ds_obs}); // 같은 차선에 존재
                     else
@@ -273,7 +295,7 @@ void LocalPath::obsCallback(const morai_msgs::ObjectStatusList::ConstPtr &msg)
             }
             else // in
             {
-                if (0.3 >= q_obs && q_obs >= -last_pose_sub_q_ - 0.3) // 도로 규격 내에 존재해야함
+                if (0.7 >= q_obs && q_obs >= -last_pose_sub_q_ - 0.7) // 도로 규격 내에 존재해야함
                     if (q_obs >= -last_pose_sub_q_ / 2)
                         obsinfo_.obs.push_back({s_obs, q_obs, global_obs_x, global_obs_y, true, ds_obs}); // 같은 차선에 존재
                     else
@@ -284,7 +306,7 @@ void LocalPath::obsCallback(const morai_msgs::ObjectStatusList::ConstPtr &msg)
         {
             if (global_path->outside_path) // out
             {
-                if (0.3 + sub_q_ >= q_obs && q_obs >= -0.3) // 도로 규격 내에 존재해야함
+                if (0.7 + sub_q_ >= q_obs && q_obs >= -0.7) // 도로 규격 내에 존재해야함
                     if (q_obs <= sub_q_ / 2)
                         obsinfo_.obs.push_back({s_obs, q_obs, global_obs_x, global_obs_y, true, ds_obs}); // 같은 차선에 존재
                     else
@@ -292,66 +314,7 @@ void LocalPath::obsCallback(const morai_msgs::ObjectStatusList::ConstPtr &msg)
             }
             else // in
             {
-                if (0.3 >= q_obs && q_obs >= -sub_q_ - 0.3) // 도로 규격 내에 존재해야함
-                    if (q_obs >= -sub_q_ / 2)
-                        obsinfo_.obs.push_back({s_obs, q_obs, global_obs_x, global_obs_y, true, ds_obs}); // 같은 차선에 존재
-                    else
-                        obsinfo_.obs.push_back({s_obs, q_obs, global_obs_x, global_obs_y, false, ds_obs}); // 다른 차선에 존재
-            }
-        }
-    }
-
-    for (const auto &obs : msg->npc_list)
-    {
-        double global_obs_x, global_obs_y;
-        global_obs_x = obs.position.x;
-        global_obs_y = obs.position.y;
-        // local_to_global(obs.x + 0.84, obs.y, global_obs_x, global_obs_y, erp);
-
-        double s_obs, q_obs;
-        compute_obstacle_frenet_all(global_obs_x, global_obs_y, s_obs, q_obs, global_path);
-
-        double ds_obs = s_obs - webot.s;
-        if (ds_obs > global_path->total_length / 2.0)
-            ds_obs -= global_path->total_length;
-        else if (ds_obs < -global_path->total_length / 2.0)
-            ds_obs += global_path->total_length;
-
-        if (fabs(webot.q - q_obs) <= 2 * webot.be && 0.0 > ds_obs)
-            continue; // 현재 차량 기준 후방 장애물 무시
-
-        if(!last_pose_low_sub_q_ && car_low_sub_q_)
-        {
-            if (global_path->outside_path) // out
-            {
-                if (0.3 + last_pose_sub_q_ >= q_obs && q_obs >= -0.3) // 도로 규격 내에 존재해야함
-                    if (q_obs <= last_pose_sub_q_ / 2)
-                        obsinfo_.obs.push_back({s_obs, q_obs, global_obs_x, global_obs_y, true, ds_obs}); // 같은 차선에 존재
-                    else
-                        obsinfo_.obs.push_back({s_obs, q_obs, global_obs_x, global_obs_y, false, ds_obs}); // 다른 차선에 존재
-            }
-            else // in
-            {
-                if (0.3 >= q_obs && q_obs >= -last_pose_sub_q_ - 0.3) // 도로 규격 내에 존재해야함
-                    if (q_obs >= -last_pose_sub_q_ / 2)
-                        obsinfo_.obs.push_back({s_obs, q_obs, global_obs_x, global_obs_y, true, ds_obs}); // 같은 차선에 존재
-                    else
-                        obsinfo_.obs.push_back({s_obs, q_obs, global_obs_x, global_obs_y, false, ds_obs}); // 다른 차선에 존재
-            }
-        }
-        else
-        {
-            if (global_path->outside_path) // out
-            {
-                if (0.3 + sub_q_ >= q_obs && q_obs >= -0.3) // 도로 규격 내에 존재해야함
-                    if (q_obs <= sub_q_ / 2)
-                        obsinfo_.obs.push_back({s_obs, q_obs, global_obs_x, global_obs_y, true, ds_obs}); // 같은 차선에 존재
-                    else
-                        obsinfo_.obs.push_back({s_obs, q_obs, global_obs_x, global_obs_y, false, ds_obs}); // 다른 차선에 존재
-            }
-            else // in
-            {
-                if (0.3 >= q_obs && q_obs >= -sub_q_ - 0.3) // 도로 규격 내에 존재해야함
+                if (0.7 >= q_obs && q_obs >= -sub_q_ - 0.7) // 도로 규격 내에 존재해야함
                     if (q_obs >= -sub_q_ / 2)
                         obsinfo_.obs.push_back({s_obs, q_obs, global_obs_x, global_obs_y, true, ds_obs}); // 같은 차선에 존재
                     else
@@ -407,17 +370,65 @@ void LocalPath::Find_s_and_q(Carinfo &car, GlobalPathInfo &inside_global_path, G
 
     if (!car_low_sub_q_) // 차량이 직선 구간에 있음
     {
-        if (fabs(inside_q0) < fabs(outside_q0))
+        if (global_path_->inside_path)
         {
-            car.s = inside_s0;
-            car.q = inside_q0;
-            global_path_ = &inside_global_path;
+            if (car.s < 39.83)
+            {
+                if (fabs(inside_q0) < fabs(outside_q0))
+                {
+                    car.s = inside_s0;
+                    car.q = inside_q0;
+                    global_path_ = &inside_global_path;
+                    left_lane_ = true;
+                    right_lane_ = false;
+                }
+                else
+                {
+                    car.s = outside_s0;
+                    car.q = outside_q0;
+                    global_path_ = &outside_global_path;
+                    left_lane_ = false;
+                    right_lane_ = true;
+                }
+            }
+            else
+            {
+                car.s = inside_s0;
+                car.q = inside_q0;
+                global_path_ = &inside_global_path;
+                left_lane_ = true;
+                right_lane_ = false;
+            }
         }
         else
         {
-            car.s = outside_s0;
-            car.q = outside_q0;
-            global_path_ = &outside_global_path;
+            if (car.s < 41.35)
+            {
+                if (fabs(inside_q0) < fabs(outside_q0))
+                {
+                    car.s = inside_s0;
+                    car.q = inside_q0;
+                    global_path_ = &inside_global_path;
+                    left_lane_ = true;
+                    right_lane_ = false;
+                }
+                else
+                {
+                    car.s = outside_s0;
+                    car.q = outside_q0;
+                    global_path_ = &outside_global_path;
+                    left_lane_ = false;
+                    right_lane_ = true;
+                }
+            }
+            else
+            {
+                car.s = inside_s0;
+                car.q = inside_q0;
+                global_path_ = &inside_global_path;
+                left_lane_ = true;
+                right_lane_ = false;
+            }
         }
     }
     else // 차량이 곡선 구간에 진입
@@ -636,16 +647,17 @@ void LocalPath::generateCandidatePaths(Carinfo &car, const GlobalPathInfo *const
     }
     else if(!last_pose_low_sub_q_ && car_low_sub_q_) // 차량이 곡선 구간에서 빠져나옴
     {
-        if (global_path->outside_path)
-        {
-            for (double off = 0.0; off <= last_pose_sub_q_ + 1e-3; off += last_pose_sub_q_) // in path 방향으로 증가
-                lane_offsets.push_back(off);
-        }
-        else
-        {
-            for (double off = 0.0; off >= -last_pose_sub_q_ - 1e-3; off -= last_pose_sub_q_) // out path 방향으로 감소
-                lane_offsets.push_back(off);
-        }
+        // if (global_path->outside_path)
+        // {
+        //     for (double off = 0.0; off <= last_pose_sub_q_ + 1e-3; off += last_pose_sub_q_) // in path 방향으로 증가
+        //         lane_offsets.push_back(off);
+        // }
+        // else
+        // {
+        //     for (double off = 0.0; off >= -last_pose_sub_q_ - 1e-3; off -= last_pose_sub_q_) // out path 방향으로 감소
+        //         lane_offsets.push_back(off);
+        // }
+        lane_offsets.push_back(0.0);
     }
     if (lane_offsets.empty()) {
         ROS_WARN("lane_offsets is empty — skipping candidate generation");
@@ -813,9 +825,9 @@ void LocalPath::computeOptimalPath(Carinfo &car, vector<Obs> &intergrated_obs, c
     double path2_target_v = car.v_max;
 
     // 충돌 거리 한계
-    double obs_front_limit = 1.0;
+    double obs_front_limit = 0.8;
     double obs_sidefront_limit = obs_front_limit;
-    double obs_sideback_limit = 0.5;
+    double obs_sideback_limit = 0.15;
     double threshold = obs_front_limit + car.v_max;
 
     if (candidate_paths.size() == 1) // 경로 1개
@@ -838,14 +850,17 @@ void LocalPath::computeOptimalPath(Carinfo &car, vector<Obs> &intergrated_obs, c
             else if (0.0 <= obs.ds_obs && obs.ds_obs <= threshold)
             {
                 double ego_to_obs_dist = hypot(obs.x - car.x, obs.y - car.y);
-                double v_candidate = std::max(car.v_min, std::min(car.v_max, car.v_max - (ego_to_obs_dist - threshold) / 2));
+                double v_candidate = std::max(car.v_min, std::min(car.v_max, car.v_max + (ego_to_obs_dist - threshold)/2));
                 path1_target_v = std::min(path1_target_v, v_candidate);
                 if (!front_obs)
                     path1.second.target_v = std::min(path1_target_v, path1.second.target_v);
             }
         }
         optimal_path = path1.first;
-        target_v = path1.second.target_v;
+        double v_limit = path1.second.target_v;
+        double v_curv = computeCurvatureVelocity(car, path1);
+        target_v = std::min(v_limit, v_curv);
+        obstacle_avoidance_ = true;
         return;
     }
     else // 경로 2개
@@ -886,7 +901,7 @@ void LocalPath::computeOptimalPath(Carinfo &car, vector<Obs> &intergrated_obs, c
             else if (0.0 <= obs.ds_obs && obs.ds_obs <= threshold)
             {
                 double ego_to_obs_dist = hypot(obs.x - car.x, obs.y - car.y);
-                double v_candidate = max(car.v_min, min(car.v_max, car.v_max + (ego_to_obs_dist - threshold) / 2));
+                double v_candidate = max(car.v_min, min(car.v_max, car.v_max + (ego_to_obs_dist - threshold)/2));
                 if (obs.same_path)
                     path1_target_v = min(path1_target_v, v_candidate);
                 else
@@ -914,7 +929,7 @@ void LocalPath::computeOptimalPath(Carinfo &car, vector<Obs> &intergrated_obs, c
 
         bool ok1 = path1.second.possible;
         bool ok2 = path2.second.possible;
-
+        must_lane_chage_ = false;
         if (must_lane_chage_ && ok2)
         {
             if (prev_global_path_->outside_path == global_path->outside_path) // 아직 차선 변경 중
@@ -936,20 +951,31 @@ void LocalPath::computeOptimalPath(Carinfo &car, vector<Obs> &intergrated_obs, c
             if (obstacle_flag) // 둘 다 가능하지만 현재 차선 멀리에 장애물 존재
             {
                 must_lane_chage_ = true;
+                obstacle_avoidance_ = true;
                 return select_best(path2);
             }
             else
+            {
+                obstacle_avoidance_ = false;
                 return select_best(path1);
+            }
         }
         else if (ok1)
+        {
+            obstacle_avoidance_ = false;
             return select_best(path1);
+        }
         else if (ok2)
         {
             must_lane_chage_ = true;
+            obstacle_avoidance_ = true;
             return select_best(path2);
         }
         else
+        {
+            obstacle_avoidance_ = false;
             return select_best(path1);
+        }
     }
 }
 

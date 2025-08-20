@@ -10,6 +10,7 @@
 #include <geometry_msgs/PoseWithCovarianceStamped.h>
 #include <tf/transform_datatypes.h>
 #include <std_msgs/Float32.h>
+#include <std_msgs/Bool.h>
 #include <sensor_msgs/PointCloud.h>
 #include <morai_msgs/ObjectStatusList.h>
 #include <tf2_ros/transform_listener.h>
@@ -49,9 +50,9 @@ struct Carinfo
   double be = 0.11;      // 상황에 따라 수정
   double a_min = -4.0;    // 상황에 따라 수정
   double a_max = 4.0;     // 상황에 따라 수정
-  double a_lat_max = 2.0; // 상황에 따라 수정
+  double a_lat_max = 0.7; // 상황에 따라 수정
   double v_min = 0.0;     // m/s          // 상황에 따라 수정
-  double v_max = 2.0;    // m/s         // 상황에 따라 수정
+  double v_max = 1.7;    // m/s         // 상황에 따라 수정
 };
 
 struct Test_Obs
@@ -97,6 +98,10 @@ private:
   // Publishers
   ros::Publisher optimal_path_pub_;
   ros::Publisher target_v_pub_;
+  ros::Publisher obstacle_avoidance_pub_;
+  ros::Publisher left_lane_pub_;
+  ros::Publisher right_lane_pub_;
+  ros::Publisher go_straight_pub_;
 
   // Subscribers
   ros::Subscriber inside_global_path_sub_;
@@ -129,6 +134,15 @@ private:
   geometry_msgs::PoseStamped last_pose_;
   double delta_s_obs_sub_num_;
 
+  bool obstacle_avoidance_;
+  std_msgs::Bool obstacle_avoidance_msg_;
+  bool left_lane_;
+  std_msgs::Bool left_lane_msg_;
+  bool right_lane_;
+  std_msgs::Bool right_lane_msg_;
+  bool go_straight_;
+  std_msgs::Bool go_straight_msg_;
+
   tf2_ros::Buffer tf_buffer_;
   tf2_ros::TransformListener tf_listener_;
 
@@ -145,7 +159,7 @@ private:
   void insideGlobalPathCallback(const nav_msgs::Path::ConstPtr &msg);
   void outsideGlobalPathCallback(const nav_msgs::Path::ConstPtr &msg);
   void updatePoseFromTF();
-  void obsCallback(const morai_msgs::ObjectStatusList::ConstPtr &msg);
+  void obsCallback(const sensor_msgs::PointCloud::ConstPtr &msg);
   void VescStateCallback(const vesc_msgs::VescStateStamped::ConstPtr& msg);
 
   void local_to_global(const double local_x, const double local_y, double &global_x, double &global_y, const Carinfo &car);
