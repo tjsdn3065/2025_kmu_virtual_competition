@@ -20,19 +20,19 @@ public:
     ego_received_ = false;
 
     // 초기 오프셋: map 기준 초기 자세
-    init_pos_.setX(-19.0);
-    init_pos_.setY(4.5);
-    init_pos_.setZ(0.03);
+    init_pos_.setX(0.0); // -19.0
+    init_pos_.setY(0.0); // 4.5
+    init_pos_.setZ(0.0); // 0.03
 
     // Euler 각도(deg) → rad → quaternion
-    double roll  = deg2rad(-359.97549438476563);
-    double pitch = deg2rad(  0.61049038171768188);
-    double yaw   = deg2rad(  0.0003662109375);
+    double roll  = deg2rad(0.0); // -359.97549438476563
+    double pitch = deg2rad(0.0); // 0.61049038171768188
+    double yaw   = deg2rad(0.0); // 0.0003662109375
     init_q_.setRPY(roll, pitch, yaw);
 
     imu_sub_  = nh_.subscribe("/imu",       10, &OdomPublisher::imuCallback,  this);
     ego_sub_  = nh_.subscribe("/Ego_topic", 10, &OdomPublisher::egoCallback,  this);
-    odom_pub_ = nh_.advertise<nav_msgs::Odometry>("/odom", 10);
+    odom_pub_ = nh_.advertise<nav_msgs::Odometry>("/ground_truth", 10);
 
     // 50Hz 타이머
     timer_ = nh_.createTimer(

@@ -14,6 +14,7 @@ find_package(catkin REQUIRED COMPONENTS
   rospy
   sensor_msgs
   std_msgs
+  tf
   tf2
   tf2_ros
   morai_msgs
@@ -111,7 +112,7 @@ find_package(catkin REQUIRED COMPONENTS
 catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES odom_gps_simulator
-  CATKIN_DEPENDS nav_msgs robot_localization roscpp rospy sensor_msgs std_msgs tf2 tf2_ros morai_msgs
+  CATKIN_DEPENDS nav_msgs robot_localization roscpp rospy sensor_msgs std_msgs tf tf2 tf2_ros morai_msgs
 #  DEPENDS system_lib
 )
 
@@ -196,6 +197,13 @@ install(FILES
   launch/odom_gps.launch
 #   # myfile2
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+)
+
+catkin_install_python(PROGRAMS
+  src/noise_imu.py
+  src/object_topic_processor.py
+  src/delivery_goal_publisher.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
 #############
